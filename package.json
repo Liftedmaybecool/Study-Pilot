@@ -1,0 +1,13 @@
+{
+  "name": "studypilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "StudyPilot Phase 1 static MVP",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.7"
+  }
+}
