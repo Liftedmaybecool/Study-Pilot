@@ -38,6 +38,7 @@ function completeAuth(name) {
   localStorage.setItem('studypilot-auth-complete', 'true');
   if (name) localStorage.setItem('studypilot-name', name);
   authScreen.classList.add('hidden');
+  fetch('/api/session/demo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name || 'Learner', email: localStorage.getItem('studypilot-user-email') || pendingEmail, provider: localStorage.getItem('studypilot-auth-provider') || 'email' }) }).catch(() => {});
   if (localStorage.getItem('studypilot-setup-complete') !== 'true') {
     onboarding.classList.remove('hidden');
     setSetupStep(1);
@@ -118,6 +119,59 @@ function notify(message) {
   window.toastTimer = window.setTimeout(() => toast.classList.remove('show'), 2800);
 }
 
+async function apiRequest(path, options = {}) {
+  const response = await fetch(path, { headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Request could not be completed');
+  return data;
+}
+
+function showComposer({ title, label, placeholder, submitLabel, onSubmit }) {
+  const existing = document.querySelector('#action-dialog');
+  if (existing) existing.remove();
+  const dialog = document.createElement('div');
+  dialog.id = 'action-dialog';
+  dialog.className = 'action-dialog-backdrop';
+  dialog.innerHTML = `<div class="action-dialog" role="dialog" aria-modal="true" aria-labelledby="action-dialog-title"><button class="dialog-close" aria-label="Close">×</button><p class="eyebrow">STUDYPILOT</p><h2 id="action-dialog-title">${escapeHtml(title)}</h2><label>${escapeHtml(label)}<textarea rows="8" placeholder="${escapeHtml(placeholder)}"></textarea></label><div class="dialog-actions"><button class="back-button dialog-cancel">Cancel</button><button class="setup-button dialog-submit">${escapeHtml(submitLabel)} <span>→</span></button></div><p class="dialog-status" aria-live="polite"></p></div>`;
+  document.body.appendChild(dialog);
+  const textarea = dialog.querySelector('textarea');
+  const status = dialog.querySelector('.dialog-status');
+  const close = () => dialog.remove();
+  dialog.querySelector('.dialog-close').addEventListener('click', close);
+  dialog.querySelector('.dialog-cancel').addEventListener('click', close);
+  dialog.addEventListener('click', event => { if (event.target === dialog) close(); });
+  dialog.querySelector('.dialog-submit').addEventListener('click', async () => {
+    if (!textarea.value.trim()) return textarea.focus();
+    status.textContent = 'Working through that now...';
+    try { await onSubmit(textarea.value.trim(), status); } catch (error) { status.textContent = error.message; }
+  });
+  textarea.focus();
+}
+
+async function startStudySession(topic) {
+  await apiRequest('/api/sessions', { method: 'POST', body: JSON.stringify({ topic, plannedMinutes: 20 }) });
+  notify(`${topic} session started. Your progress will be tracked.`);
+}
+
+function openMaterialAnalyzer() {
+  showComposer({ title: 'Turn notes into a learning map', label: 'Paste notes or a scheme of work', placeholder: 'Paste your notes here. Each line can become a topic or key idea.', submitLabel: 'Analyze notes', onSubmit: async (text, status) => {
+    const result = await apiRequest('/api/materials/analyze', { method: 'POST', body: JSON.stringify({ title: 'New study material', text }) });
+    status.textContent = `Found ${result.concepts.length} concepts and ${result.questions.length} practice prompts. Saved to your materials.`;
+    notify('Your material was analyzed and saved.');
+  } });
+}
+
+async function generateReviewDeck() {
+  const topics = (localStorage.getItem('studypilot-scheme') || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(0, 10);
+  const result = await apiRequest('/api/flashcards/generate', { method: 'POST', body: JSON.stringify({ topics }) });
+  notify(`Created ${result.flashcards.length} active-recall cards.`);
+}
+
+async function generatePlan() {
+  const result = await apiRequest('/api/plan/generate', { method: 'POST', body: JSON.stringify({ days: 12, minutesPerDay: 45 }) });
+  notify(`Your ${result.sessions.length}-day adaptive plan is ready.`);
+}
+
 const oauthQuery = new URLSearchParams(window.location.search);
 if (oauthQuery.get('oauth') === 'success') {
   const provider = oauthQuery.get('provider') || 'provider';
@@ -149,13 +203,13 @@ document.addEventListener('click', event => {
     addUserMessage(prompt);
     window.setTimeout(() => addTutorMessage(responseFor(prompt)), 450);
   }
-  if (action === 'start-session') notify('Session ready. Take it one question at a time.');
+  if (action === 'start-session') startStudySession(event.target.closest('.focus-card, .session-row')?.querySelector('h3, strong')?.textContent || 'Focused study').catch(error => notify(error.message));
   if (action === 'add-focus') notify('Focus picker is ready for your next activity.');
   if (action === 'practice') notify('Practice set created for Punnett squares.');
-  if (action === 'add-exam') notify('Exam setup opened.');
+  if (action === 'add-exam') generatePlan().catch(error => notify(error.message));
   if (action === 'add-subject') notify('Subject setup opened.');
-  if (action === 'upload') notify('Choose a PDF, note, or slide deck to add.');
-  if (action === 'start-review') notify('Your 24 due cards are queued.');
+  if (action === 'upload') openMaterialAnalyzer();
+  if (action === 'start-review') generateReviewDeck().catch(error => notify(error.message));
   if (action === 'new-class') {
     onboarding.classList.remove('hidden');
     const hasExistingSetup = localStorage.getItem('studypilot-setup-complete') === 'true';
@@ -322,5 +376,8 @@ document.querySelector('#chat-form')?.addEventListener('submit', event => {
   if (!text) return;
   input.value = '';
   addUserMessage(text);
-  window.setTimeout(() => addTutorMessage(responseFor(text)), 450);
+  fetch('/api/tutor', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: text, context: document.querySelector('.context-pill')?.textContent || 'Current study topic' }) })
+    .then(response => response.ok ? response.json() : Promise.reject(new Error('Tutor unavailable')))
+    .then(data => addTutorMessage(data.reply))
+    .catch(() => window.setTimeout(() => addTutorMessage(responseFor(text)), 450));
 });
